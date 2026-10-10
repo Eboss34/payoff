@@ -91,7 +91,7 @@ button{cursor:pointer}
 .row{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line2);width:100%;background:none;border-left:0;border-right:0;border-top:0;text-align:left}
 .row:last-child{border-bottom:0}
 .row .main{flex:1;min-width:0}
-.row .t{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center}
+.row .t{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .row .s{font-size:13.5px;color:var(--ink2);margin-top:1px}
 .row .amt{font:600 17px/1 var(--body);text-align:right}
 .row .amt small{display:block;font-size:12.5px;font-weight:500;color:var(--muted);margin-top:4px}
@@ -111,7 +111,7 @@ button{cursor:pointer}
 .item{display:block;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);padding:15px 2px}
 .item:hover{background:color-mix(in srgb,var(--surface) 55%,transparent)}
 .item .l1{display:flex;justify-content:space-between;gap:14px;align-items:baseline}
-.item .nm{font-weight:700;font-size:17px;display:flex;align-items:center}
+.item .nm{font-weight:700;font-size:17px}
 .item .ds{color:var(--ink2);font-size:14px;margin-left:6px;font-weight:400}
 .item .bal{font:700 20px/1 var(--display);letter-spacing:-.01em}
 .item .l2{display:flex;flex-wrap:wrap;gap:6px 8px;margin-top:9px;align-items:center;font-size:13.5px;color:var(--ink2)}
@@ -145,7 +145,7 @@ table.t td:last-child,table.t th:last-child{text-align:right}
 @media (min-width:640px){.scrim{align-items:center}.sheet{border-radius:24px}}
 @keyframes up{from{transform:translateY(24px);opacity:0}}
 @keyframes fade{from{opacity:0}}
-.sheet h3{font:700 22px/1.15 var(--display);margin:0 0 4px;letter-spacing:-.015em;display:flex;align-items:center}
+.sheet h3{font:700 22px/1.15 var(--display);margin:0 0 4px;letter-spacing:-.015em}
 .sheet .sub{color:var(--ink2);margin:0 0 16px;font-size:14.5px}
 .field{display:block;margin:0 0 13px}
 .field>span{display:block;font-size:13.5px;font-weight:600;color:var(--ink2);margin-bottom:5px}
@@ -208,7 +208,7 @@ const diffDays = (a, b) => Math.round((pd(b) - pd(a)) / 864e5);
 const dim = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate();
 const todayStr = () => { const n = new Date(); return `${n.getFullYear()}-${pad(n.getMonth() + 1)}-${pad(n.getDate())}`; };
 const money = (n, cents = true) => (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US', cents ? { minimumFractionDigits: 2, maximumFractionDigits: 2 } : { maximumFractionDigits: 0 });
-const moneyC = n => {
+const moneyC = n => { // cents only if needed
   return Math.abs(n - Math.round(n)) < 0.005 ? money(n, false) : money(n, true);
 };
 const fmt = (s, o = { month: 'short', day: 'numeric' }) => pd(s).toLocaleDateString('en-US', { timeZone: 'UTC', ...o });
@@ -217,12 +217,6 @@ const fmtMY = s => fmt(s, { month: 'short', year: 'numeric' });
 const fmtWD = s => fmt(s, { weekday: 'short', month: 'short', day: 'numeric' });
 const ordinal = n => { const v = n % 100; return n + (['th', 'st', 'nd', 'rd'][(v - 20) % 10] || ['th', 'st', 'nd', 'rd'][v] || 'th'); };
 const rel = (s, t) => { const d = diffDays(t, s); return d === 0 ? 'today' : d === 1 ? 'tomorrow' : d === -1 ? 'yesterday' : d > 0 ? `in ${d} days` : `${-d} days ago`; };
-const debtColor = id => {
-  if (!id) return 'var(--muted)';
-  const palette = ['var(--s1)', 'var(--amber)', 'var(--s3)', 'var(--red)', 'var(--s5)', 'var(--accent)'];
-  const hash = String(id).split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-  return palette[hash % palette.length];
-};
 
 /* ---------- state ---------- */
 const LS = {
@@ -311,6 +305,9 @@ function makePlan(debt, bal, today) {
   const auto = Math.max(min, req), custom = num(debt.plan);
   return { min, req, monthsLeft, auto, planned: custom > 0 ? custom : auto, custom: custom > 0 };
 }
+/* Day-by-day balance: interest accrues daily at APR/365 (0% while interest-free) and
+   is added to the balance on the 1st of each month. Past days use logged entries;
+   future days assume the planned payment on the due day each month. */
 function simulate(debt, entries, today) {
   const start = debt.startDate && debt.startDate <= today ? debt.startDate : today;
   const apr = num(debt.apr) / 100 / 365;
@@ -322,6 +319,7 @@ function simulate(debt, entries, today) {
     .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''))
     .forEach(e => (byDate[e.date] ||= []).push(e));
   const pay = amt => { const x = Math.min(pend, amt); pend -= x; bal = Math.max(0, bal - (amt - x)); };
+  // Interest for a day is added before that day's payments, so a balance you enter or set today is shown as-is.
   const accrue = d => {
     const r = rateOn(d);
     if (r > 0 && bal > 0) { const i = bal * r; pend += i; interest += i; }
@@ -391,7 +389,7 @@ function paycheckRows(m) {
     } else {
       since = paidSince(debt, addDays(c.start, -1));
     }
-    const p = makePlan(debt, sim.balNow + since, m.today);
+    const p = makePlan(debt, sim.balNow + since, m.today);   // plan as it stood before this period's payments
     target = debt.dueDay ? Math.min(p.planned, sim.balNow + since) : Math.min(Math.ceil(p.planned * c.every / 30.44), sim.balNow + since);
     if (sim.done && since === 0) continue;
     const got = Math.min(since, target), remaining = Math.max(0, target - got);
@@ -495,7 +493,7 @@ function paycheckCard(m, p) {
     else tag = r.due ? `<span class="tag">Due ${fmtWD(r.due)}</span>` : '<span class="tag">Any time</span>';
     const sub = r.remaining <= 0.005 ? (r.it.sim.done ? 'Paid off' : `${money(r.got)} paid`) : r.got > 0 ? `${money(r.got)} paid · ${money(r.remaining)} to go` : (r.minMet ? 'Minimum covered' : esc(d.description || ''));
     return `<button class="row" data-a="${r.remaining > 0.005 ? 'log' : 'debt'}" data-id="${esc(d.id)}" data-amt="${r.remaining.toFixed(2)}">
-      <div class="main"><div class="t"><b style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${debtColor(d.id)};margin-right:6px"></b>${esc(d.name)}</div><div class="s">${sub}</div></div>
+      <div class="main"><div class="t">${esc(d.name)}</div><div class="s">${sub}</div></div>
       <div class="amt num">${money(r.remaining > 0.005 ? r.remaining : r.got, false)}<small>${tag.replace('class="tag', 'style="margin-top:2px" class="tag')}</small></div></button>`;
   }).join('');
   return `<section class="sec"><div class="sec-h"><h2>This paycheck</h2><span>${fmt(c.start)} – ${fmt(addDays(c.next, -1))}</span></div>
@@ -514,7 +512,7 @@ function promoSection(m) {
     const after = num(debt.apr) > 0 ? ` then ${num(debt.apr)}% APR` : '';
     const note = short ? `<p class="note warn">On the current plan about ${money(sim.balAtPromoEnd, false)} is left when 0% ends. Pay ${money(p.req, false)}/mo to clear it.</p>`
       : `<p class="note ok">On pace to clear it before 0% ends.</p>`;
-    return `<button class="item" data-a="debt" data-id="${esc(debt.id)}"><div class="l1"><span class="nm"><b style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${debtColor(debt.id)};margin-right:6px"></b>${esc(debt.name)}</span><span class="bal num">${money(sim.balNow, false)}</span></div>
+    return `<button class="item" data-a="debt" data-id="${esc(debt.id)}"><div class="l1"><span class="nm">${esc(debt.name)}</span><span class="bal num">${money(sim.balNow, false)}</span></div>
       <div class="l2"><span class="tag ${d < 60 ? 'warn' : ''}">0% ends ${fmtY(debt.zeroUntil)}</span><span>${d} days${after}</span></div>${note}</button>`;
   }).join('');
   return `<section class="sec"><div class="sec-h"><h2>0% deadlines</h2><span>${list.length} to watch</span></div><div class="list">${items}</div>${list.length > 3 ? `<button class="linkbtn" data-a="promoall">${showAllPromo ? 'Show fewer' : `Show all ${list.length}`}</button>` : ''}</section>`;
@@ -522,7 +520,7 @@ function promoSection(m) {
 function extraSection(m) {
   const list = m.live.filter(i => !i.sim.isZeroNow && i.sim.monthlyInterest > 0).sort((a, b) => num(b.debt.apr) - num(a.debt.apr)).slice(0, 3);
   if (!list.length) return '';
-  const rows = list.map(i => `<button class="item" data-a="debt" data-id="${esc(i.debt.id)}"><div class="l1"><span class="nm"><b style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${debtColor(i.debt.id)};margin-right:6px"></b>${esc(i.debt.name)}</span><span class="bal num">${num(i.debt.apr)}%</span></div>
+  const rows = list.map(i => `<button class="item" data-a="debt" data-id="${esc(i.debt.id)}"><div class="l1"><span class="nm">${esc(i.debt.name)}</span><span class="bal num">${num(i.debt.apr)}%</span></div>
     <div class="l2"><span>${money(i.sim.balNow, false)} owed · costs about ${money(i.sim.monthlyInterest, false)} a month in interest</span></div></button>`).join('');
   return `<section class="sec"><div class="sec-h"><h2>Extra cash works hardest here</h2></div><div class="list">${rows}</div><p class="note">Highest interest rates first, ignoring debts at 0% right now.</p></section>`;
 }
@@ -541,13 +539,13 @@ function debtsView(m) {
   const sorted = m.items.slice().sort((a, b) => (a.sim.done - b.sim.done) || b.sim.balNow - a.sim.balNow);
   const rows = sorted.map(it => {
     const { debt, sim } = it, pct = sim.paid + sim.balNow > 0 ? sim.paid / (sim.paid + sim.balNow) * 100 : (sim.done ? 100 : 0);
-    return `<button class="item" data-a="debt" data-id="${esc(debt.id)}"><div class="l1"><span><span class="nm"><b style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${debtColor(debt.id)};margin-right:6px"></b>${esc(debt.name)}</span><span class="ds">${esc(debt.description)}</span></span><span class="bal num">${money(sim.balNow)}</span></div>
+    return `<button class="item" data-a="debt" data-id="${esc(debt.id)}"><div class="l1"><span><span class="nm">${esc(debt.name)}</span><span class="ds">${esc(debt.description)}</span></span><span class="bal num">${money(sim.balNow)}</span></div>
     <div class="l2">${debtMeta(it, m.today)}</div><div class="bar"><i style="width:${pct}%"></i></div></button>`;
   }).join('');
   const arch = data.debts.filter(d => d.archived);
   return `<section class="sec" style="padding-top:14px"><div class="sec-h"><h2>Debts</h2><button class="btn pri sm" data-a="new">Add debt</button></div>
   ${rows ? `<div class="list">${rows}</div>` : '<p class="empty">No debts yet. Add one to start tracking.</p>'}
-  ${arch.length ? `<div class="sec-h" style="margin-top:30px"><h2 style="font-size:17px">Archived</h2></div><div class="list">${arch.map(d => `<div class="item" style="display:flex;justify-content:space-between;align-items:center;gap:10px"><span><b style="display:inline-flex;align-items:center;gap:6px"><i style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${debtColor(d.id)}"></i>${esc(d.name)}</b> <span class="ds">${esc(d.description)}</span></span><span><button class="btn sm" data-a="restore" data-id="${esc(d.id)}">Restore</button> <button class="btn sm danger" data-a="purge" data-id="${esc(d.id)}">Delete</button></span></div>`).join('')}</div>` : ''}</section>`;
+  ${arch.length ? `<div class="sec-h" style="margin-top:30px"><h2 style="font-size:17px">Archived</h2></div><div class="list">${arch.map(d => `<div class="item" style="display:flex;justify-content:space-between;align-items:center;gap:10px"><span><b>${esc(d.name)}</b> <span class="ds">${esc(d.description)}</span></span><span><button class="btn sm" data-a="restore" data-id="${esc(d.id)}">Restore</button> <button class="btn sm danger" data-a="purge" data-id="${esc(d.id)}">Delete</button></span></div>`).join('')}</div>` : ''}</section>`;
 }
 function paymentsView(m) {
   const names = Object.fromEntries(data.debts.map(d => [d.id, d.name]));
@@ -560,7 +558,7 @@ function paymentsView(m) {
     if (mk !== cur) { cur = mk; const tot = es.filter(x => x.kind === 'payment' && x.date.slice(0, 7) === mk).reduce((s, x) => s + num(x.amount), 0); html += `<div class="sec-h" style="margin:22px 0 6px"><h2 style="font-size:17px">${fmt(mk + '-01', { month: 'long', year: 'numeric' })}</h2><span class="num">${money(tot)} paid</span></div>`; }
     const kind = e.kind === 'charge' ? 'New charge' : e.kind === 'sync' ? 'Balance set to' : 'Payment';
     const early = (data.debts.find(d => d.id === e.debtId) || {}).startDate > e.date;
-    html += `<div class="item" style="display:flex;justify-content:space-between;gap:12px;align-items:center"><div><b style="display:inline-flex;align-items:center;gap:6px"><i style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${debtColor(e.debtId)}"></i>${esc(names[e.debtId] || 'Removed debt')}</b><div class="note" style="margin:2px 0 0">${fmt(e.date)} · ${kind}${e.note ? ' · ' + esc(e.note) : ''}${early ? ' · before start date, not counted' : ''}</div></div>
+    html += `<div class="item" style="display:flex;justify-content:space-between;gap:12px;align-items:center"><div><b>${esc(names[e.debtId] || 'Removed debt')}</b><div class="note" style="margin:2px 0 0">${fmt(e.date)} · ${kind}${e.note ? ' · ' + esc(e.note) : ''}${early ? ' · before start date, not counted' : ''}</div></div>
       <div style="text-align:right"><div class="num" style="font-weight:700;${e.kind === 'charge' ? 'color:var(--red)' : ''}">${e.kind === 'charge' ? '+' : ''}${money(num(e.amount))}</div><button class="linkbtn" data-a="delentry" data-id="${esc(e.id)}" style="font-size:13px;color:var(--muted)">Delete</button></div></div>`;
   }
   return `<section class="sec" style="padding-top:14px"><div class="sec-h"><h2>History</h2><button class="btn pri sm" data-a="log">Log payment</button></div>
@@ -597,7 +595,7 @@ function drawChart(m) {
     ${promo}<circle cx="${X(last.date)}" cy="${Y(last.v)}" r="4.5" fill="var(--accent)" stroke="var(--surface)" stroke-width="2"/>
     <line id="cx" y1="${T}" y2="${Y(0)}" stroke="var(--ink)" stroke-width="1" opacity="0"/><circle id="cd" r="5" fill="var(--accent)" stroke="var(--surface)" stroke-width="2" opacity="0"/>
     <rect x="${L}" y="0" width="${W - L - R}" height="${H}" fill="transparent" id="hit"/></svg><div class="tip" id="tip"></div></div>
-    <p class="note" style="margin-top:6px">${m.anyNever ? 'Some debts never pay off at their current payment, so this view stops at 5 years.' : last.v <= 0.005 ? `Reaches $0 in${fmtMY(last.date)}.` : ''} Projection assumes the planned payment every month. ${ch.promos.length ? 'Amber marks show when 0% periods end.' : ''}</p>
+    <p class="note" style="margin-top:6px">${m.anyNever ? 'Some debts never pay off at their current payment, so this view stops at 5 years.' : last.v <= 0.005 ? `Reaches $0 in ${fmtMY(last.date)}.` : ''} Projection assumes the planned payment every month. ${ch.promos.length ? 'Amber marks show when 0% periods end.' : ''}</p>
     <button class="linkbtn" id="tblbtn">${showTable ? 'Hide table' : 'View as table'}</button>
     ${showTable ? `<table class="t num"><tr><th>Month</th><th></th><th>Balance</th></tr>${pts.map(p => `<tr><td>${fmtMY(p.date)}</td><td>${p.actual ? 'actual' : 'projected'}</td><td>${money(p.v, false)}</td></tr>`).join('')}</table>` : ''}`;
   const tip = $('#tip'), cx = $('#cx'), cd = $('#cd'), svg = $('svg', host);
@@ -668,13 +666,13 @@ function debtSheet(id) {
   const m = buildModel(), it = m.items.find(i => i.debt.id === id); if (!it) return;
   const { debt, sim } = it, p = sim.plan;
   const hist = data.entries.filter(e => e.debtId === id).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8);
-  openSheet(`<h3><b style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${debtColor(debt.id)};margin-right:8px;transform:translateY(-2px)"></b>${esc(debt.name)}</h3><p class="sub">${esc(debt.description) || ' '}</p>
+  openSheet(`<h3>${esc(debt.name)}</h3><p class="sub">${esc(debt.description) || ' '}</p>
   <div style="font:700 40px/1 var(--display);letter-spacing:-.02em" class="num">${money(sim.balNow)}</div>
   <div class="l2" style="display:flex;flex-wrap:wrap;gap:6px 8px;margin-top:10px;font-size:13.5px;color:var(--ink2)">${debtMeta(it, m.today)}</div>
   <dl class="facts"><div><dt>Paid so far</dt><dd class="num">${money(sim.paid)}</dd></div><div><dt>Interest so far (est.)</dt><dd class="num">${money(sim.interestToDate)}</dd></div>
   <div><dt>Plan per month</dt><dd class="num">${money(p.planned, false)}${p.custom ? ' (yours)' : p.req > p.min ? ' (to beat 0% deadline)' : ''}</dd></div>
   <div><dt>Minimum payment</dt><dd class="num">${p.min ? money(p.min, false) : '–'}</dd></div></dl>
-  ${sim.never ? `<p class="note warn">Interest is about ${money(sim.monthlyInterest, false)} a month, more than the${money(p.planned, false)} payment. Pay more than ${money(Math.ceil(sim.monthlyInterest), false)} a month to start making progress.</p>` : ''}
+  ${sim.never ? `<p class="note warn">Interest is about ${money(sim.monthlyInterest, false)} a month, more than the ${money(p.planned, false)} payment. Pay more than ${money(Math.ceil(sim.monthlyInterest), false)} a month to start making progress.</p>` : ''}
   ${hist.length ? `<div class="list" style="margin-bottom:6px">${hist.map(e => `<div class="item" style="display:flex;justify-content:space-between;padding:10px 2px"><span>${fmt(e.date)} · ${e.kind === 'charge' ? 'New charge' : e.kind === 'sync' ? 'Balance set' : 'Payment'}</span><b class="num">${money(num(e.amount))}</b></div>`).join('')}</div>` : '<p class="note">No payments logged yet.</p>'}
   <div class="acts"><button class="btn pri" data-a="log" data-id="${esc(id)}" ${sim.done ? 'disabled' : ''}>Log payment</button><button class="btn" data-a="edit" data-id="${esc(id)}">Edit</button></div>
   <div class="acts" style="margin-top:8px"><button class="btn" data-a="close">Close</button></div>`);
@@ -695,14 +693,14 @@ function editSheet(id) {
   <p class="err" id="err" hidden></p>
   <div class="acts"><button type="button" class="btn" data-a="close">Cancel</button><button class="btn pri">${d ? 'Save changes' : 'Add debt'}</button></div>
   ${d ? `<div class="acts" style="margin-top:6px"><button type="button" class="btn danger" data-a="remove" data-id="${esc(d.id)}">Remove this debt</button></div>` : ''}</form>`, sh => {
-    const f = $('form', sh); f.zero.onchange = () => {$('#zrow', sh).hidden = !f.zero.checked; }; if (!d) setTimeout(() => f.name.focus(), 50);
+    const f = $('form', sh); f.zero.onchange = () => { $('#zrow', sh).hidden = !f.zero.checked; }; if (!d) setTimeout(() => f.name.focus(), 50);
   });
 }
 function settingsSheet() {
   const s = data.settings;
   openSheet(`<h3>Settings</h3><p class="sub">Shared by everyone using this link.</p>
   <form data-form="settings"><div class="two"><label class="field"><span>A payday</span><input class="in" type="date" name="anchor" value="${esc(s.payAnchor || '')}"><small>Any past or upcoming payday works.</small></label>
-  <label class="field"><span>Paid every</span><select class="in" name="every">${[7, 14, 15, 30].map(n => `<option value="${n}" ${num(s.payEvery \vert{}\vert{} 14) === n ? 'selected' : ''}>${n === 15 ? '15 days' : n === 30 ? 'Month (30 days)' : n + ' days'}</option>`).join('')}</select></label></div>
+  <label class="field"><span>Paid every</span><select class="in" name="every">${[7, 14, 15, 30].map(n => `<option value="${n}" ${num(s.payEvery || 14) === n ? 'selected' : ''}>${n === 15 ? '15 days' : n === 30 ? 'Month (30 days)' : n + ' days'}</option>`).join('')}</select></label></div>
   <div class="acts" style="margin-top:4px"><button class="btn pri">Save</button></div></form>
   <hr style="border:0;border-top:1px solid var(--line);margin:20px 0">
   <div class="acts" style="margin-top:0;flex-direction:column"><button class="btn" data-a="invite">Copy link for your wife</button><button class="btn" data-a="csv">Download payment history (CSV)</button><button class="btn" data-a="refresh2">Sync now</button><button class="btn danger" data-a="disconnect">Disconnect this device</button></div>
