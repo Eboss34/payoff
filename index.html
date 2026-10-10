@@ -208,7 +208,7 @@ const diffDays = (a, b) => Math.round((pd(b) - pd(a)) / 864e5);
 const dim = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate();
 const todayStr = () => { const n = new Date(); return `${n.getFullYear()}-${pad(n.getMonth() + 1)}-${pad(n.getDate())}`; };
 const money = (n, cents = true) => (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US', cents ? { minimumFractionDigits: 2, maximumFractionDigits: 2 } : { maximumFractionDigits: 0 });
-const moneyC = n => { // cents only if needed
+const moneyC = n => {
   return Math.abs(n - Math.round(n)) < 0.005 ? money(n, false) : money(n, true);
 };
 const fmt = (s, o = { month: 'short', day: 'numeric' }) => pd(s).toLocaleDateString('en-US', { timeZone: 'UTC', ...o });
@@ -219,9 +219,9 @@ const ordinal = n => { const v = n % 100; return n + (['th', 'st', 'nd', 'rd'][(
 const rel = (s, t) => { const d = diffDays(t, s); return d === 0 ? 'today' : d === 1 ? 'tomorrow' : d === -1 ? 'yesterday' : d > 0 ? `in ${d} days` : `${-d} days ago`; };
 const debtColor = id => {
   if (!id) return 'var(--muted)';
-  const colors = ['var(--s1)', 'var(--amber)', 'var(--s3)', 'var(--red)', 'var(--s5)', 'var(--accent)'];
-  const num = String(id).split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-  return colors[num % colors.length];
+  const palette = ['var(--s1)', 'var(--amber)', 'var(--s3)', 'var(--red)', 'var(--s5)', 'var(--accent)'];
+  const hash = String(id).split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return palette[hash % palette.length];
 };
 
 /* ---------- state ---------- */
@@ -311,9 +311,6 @@ function makePlan(debt, bal, today) {
   const auto = Math.max(min, req), custom = num(debt.plan);
   return { min, req, monthsLeft, auto, planned: custom > 0 ? custom : auto, custom: custom > 0 };
 }
-/* Day-by-day balance: interest accrues daily at APR/365 (0% while interest-free) and
-   is added to the balance on the 1st of each month. Past days use logged entries;
-   future days assume the planned payment on the due day each month. */
 function simulate(debt, entries, today) {
   const start = debt.startDate && debt.startDate <= today ? debt.startDate : today;
   const apr = num(debt.apr) / 100 / 365;
@@ -325,7 +322,6 @@ function simulate(debt, entries, today) {
     .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''))
     .forEach(e => (byDate[e.date] ||= []).push(e));
   const pay = amt => { const x = Math.min(pend, amt); pend -= x; bal = Math.max(0, bal - (amt - x)); };
-  // Interest for a day is added before that day's payments, so a balance you enter or set today is shown as-is.
   const accrue = d => {
     const r = rateOn(d);
     if (r > 0 && bal > 0) { const i = bal * r; pend += i; interest += i; }
@@ -395,7 +391,7 @@ function paycheckRows(m) {
     } else {
       since = paidSince(debt, addDays(c.start, -1));
     }
-    const p = makePlan(debt, sim.balNow + since, m.today);   // plan as it stood before this period's payments
+    const p = makePlan(debt, sim.balNow + since, m.today);
     target = debt.dueDay ? Math.min(p.planned, sim.balNow + since) : Math.min(Math.ceil(p.planned * c.every / 30.44), sim.balNow + since);
     if (sim.done && since === 0) continue;
     const got = Math.min(since, target), remaining = Math.max(0, target - got);
