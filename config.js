@@ -2,5 +2,5 @@
 // It looks like: https://script.google.com/macros/s/AKfy...long...code/exec
 // (It's safe for this to be public: nobody can get in without a password.)
 window.APP_CONFIG = {
-  apiUrl: 'PASTE_YOUR_WEB_APP_URL_HERE',
+  apiUrl: 'https://script.google.com/macros/s/AKfycbx_Hiip3CeEkfhBQFIUSvOjzYX_wnRrnRVUhGafgaQprqt-myyeUvnH-qhgV10_q3gh/exec',
 };
