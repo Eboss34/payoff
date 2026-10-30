@@ -512,9 +512,9 @@ function buckets() {
   const key = data.settings.buckets || '';
   if (_bk && key === _bkKey) return _bk;
   let saved = []; try { saved = JSON.parse(key || '[]'); if (!Array.isArray(saved)) saved = []; } catch { saved = []; }
-  const out = BUILTIN.map(b => { const o = saved.find(x => x && x.id === b.id) || {}; return { ...b, name: o.name || b.name, color: BK_COLORS[o.color] ? o.color : b.color, logs: b.kind !== 'pay' && !!o.logs }; });
+  const out = BUILTIN.map(b => { const o = saved.find(x => x && x.id === b.id) || {}; return { ...b, name: o.name || b.name, color: BK_COLORS[o.color] ? o.color : b.color, logs: b.kind !== 'pay' && !!o.logs, round: b.kind !== 'pay' && (o.round === undefined ? b.id === 'ethan' : !!o.round) }; });
   const custom = saved.filter(x => x && x.id && x.name && !BUILTIN.some(b => b.id === x.id)).map(x => ({ id: String(x.id), name: String(x.name),
-    short: String(x.name).replace(/^(send to|send|pay|move to|set aside for|save for)\s+/i, '') || String(x.name), kind: KIND[x.kind] ? x.kind : 'send', color: BK_COLORS[x.color] ? x.color : 'rose', logs: !!x.logs }));
+    short: String(x.name).replace(/^(send to|send|pay|move to|set aside for|save for)\s+/i, '') || String(x.name), kind: KIND[x.kind] ? x.kind : 'send', color: BK_COLORS[x.color] ? x.color : 'rose', logs: !!x.logs, round: x.kind !== 'pay' && !!x.round }));
   out.splice(2, 0, ...custom);
   _bkKey = key; _bk = out.map(b => ({ ...KIND[b.kind], ...b }));
   return _bk;
@@ -689,14 +689,18 @@ function planFor(m, off) {
       if (si > i0) { if (off < si) continue; if (off === si) parts = Math.min(off, i0 + use - 1) - i0 + 1; else if (pos >= use) { if (ln.amount > 0) P.bonus.push(ln); continue; } }
       else if (pos >= use) { if (ln.amount > 0) P.bonus.push(ln); continue; }
       part = { i: Math.min(pos, use - 1) + 1, n: use, catchup: parts > 1 };
-      if (P.cur) since = parts > 1 ? paidBetween(ln.id, prev) : paidBetween(ln.id, addDays(start, -1), next);
+      const bk = bkById(ln.who), perCheck = bk.kind === 'pay' || bk.logs;   // paid a piece every paycheck vs. paid in full on the due date
+      if (P.cur) {
+        if (perCheck) since = parts > 1 ? paidBetween(ln.id, prev) : paidBetween(ln.id, addDays(start, -1), next);
+        else { const cyc = cyclePaid(ln.id, prev, due); part.cyc = cyc; if (cyc >= ln.amount - 0.005) since = 1e9; }
+      }
       amt = parts >= use ? ln.amount : Math.ceil(ln.amount / use * parts * 100) / 100;
       if (ln.kind === 'debt') amt = Math.min(amt, ln.it.sim.balNow + since);
     } else {
       if (P.cur) since = paidBetween(ln.id, addDays(start, -1), next);
       if (ln.freq === 'paycheck') amt = ln.amount;
-      else if (ln.freq === 'yearly') { amt = Math.ceil(ln.amount / ppy); due = ln.dueMonth ? nextYearly(ln.dueMonth, ln.dueDay, start) : null; }
-      else amt = Math.ceil(ln.amount * 12 / ppy);
+      else if (ln.freq === 'yearly') { amt = Math.ceil(ln.amount / ppy * 100) / 100; due = ln.dueMonth ? nextYearly(ln.dueMonth, ln.dueDay, start) : null; }
+      else amt = Math.ceil(ln.amount * 12 / ppy * 100) / 100;
       if (ln.kind === 'debt') amt = Math.min(amt, ln.it.sim.balNow + since);
     }
     amt = r2(amt);
@@ -709,8 +713,18 @@ function planFor(m, off) {
   // A little extra on top of what Oakley sends Ethan
   const cushion = m.cushion;
   if (cushion > 0 && P.rows.some(r => r.ln.who === 'ethan'))
-    P.rows.push({ ln: { key: 'cushion', kind: 'cushion', id: '', name: 'Cushion', who: 'ethan', group: 'Cushion', mode: 'even', spread: true, freq: 'paycheck' }, amt: cushion, due: null, got: 0, chk: null, covered: false, remaining: cushion, cushion: true });
-  const order = (a, b) => (a.cushion - b.cushion) || (a.due || '9999').localeCompare(b.due || '9999') || a.ln.name.localeCompare(b.ln.name);
+    P.rows.push({ ln: { key: 'cushion', kind: 'cushion', id: '', name: 'Cushion', who: 'ethan', group: 'Cushion', mode: 'even', spread: true, freq: 'paycheck' }, amt: cushion, base: cushion, due: null, got: 0, chk: null, covered: false, remaining: cushion, cushion: true });
+  // Round piles up to a whole dollar: items stay exact, the leftover cents ride on the cushion (or a Round-up line)
+  for (const b of buckets()) {
+    if (!b.round) continue;
+    const inPile = P.rows.filter(r => r.ln.who === b.id); if (!inPile.length) continue;
+    const sub = r2(inPile.reduce((t, r) => t + r.amt, 0)), extra = r2(Math.ceil(sub - 0.004) - sub);
+    if (extra <= 0.004) continue;
+    const cu = inPile.find(r => r.cushion && r.ln.key === 'cushion');
+    if (cu) { cu.amt = r2(cu.amt + extra); cu.remaining = cu.amt; cu.roundup = extra; }
+    else P.rows.push({ ln: { key: 'roundup:' + b.id, kind: 'cushion', id: '', name: 'Round-up', who: b.id, group: 'Cushion', mode: 'even', spread: true, freq: 'paycheck' }, amt: extra, base: 0, due: null, got: 0, chk: null, covered: false, remaining: extra, cushion: true, roundup: extra });
+  }
+  const order = (a, b) => (!!a.cushion - !!b.cushion) || (a.due || '9999').localeCompare(b.due || '9999') || a.ln.name.localeCompare(b.ln.name);
   P.buckets = buckets().map(b => {
     const rows = P.rows.filter(r => r.ln.who === b.id).sort(order);
     const total = r2(rows.reduce((s, r) => s + r.amt, 0));
@@ -765,7 +779,10 @@ function paintStatus() {
 /* ===== Paycheck plan (Ethan) ===== */
 function statusTag(r, P, today) {
   if (r.cushion) return '<span class="tag acc">Just in case</span>';
-  if (r.covered) return `<span class="tag ok">${r.chk && !r.chk.entryId && r.got < r.amt - 0.005 ? 'Set aside' : 'Paid'}</span>`;
+  if (r.covered && r.chk && !r.chk.entryId && r.got < r.amt - 0.005)
+    return bkById(r.ln.who).kind === 'save' && r.ln.kind !== 'debt' ? '<span class="tag ok">Set aside</span>' : '<span class="tag warn">Checked · not logged</span>';
+  if (r.covered) return '<span class="tag ok">Paid</span>';
+  if (r.part && r.part.cyc > 0.004 && r.ln.kind === 'debt') return `<span class="tag warn">${money(r.part.cyc, false)} of ${money(r.ln.amount, false)} paid</span>`;
   if (r.funded) return '<span class="tag ok">Funded</span>';
   if (r.ln.autopay && r.due) return `<span class="tag acc">Autopay ${fmt(r.due)}</span>`;
   if (r.part) return `<span class="tag acc">${r.part.catchup ? 'Catch-up · ' : r.part.n > 1 ? `Part ${r.part.i} of ${r.part.n} · ` : ''}due ${fmt(r.due)}</span>`;
@@ -779,7 +796,7 @@ function statusTag(r, P, today) {
 }
 function rowSub(r) {
   const ln = r.ln;
-  if (r.cushion) return 'Extra on top';
+  if (r.cushion) return r.base ? (r.roundup ? `${moneyC(r.base)} + ${money(r.roundup)} to round up` : 'Extra on top') : 'Rounds the total to a whole dollar';
   if (ln.kind === 'debt') return m_minOnly ? 'Minimum' : (r.ln.it.sim.plan.custom ? 'Your plan' : r.ln.it.sim.plan.req > r.ln.it.sim.plan.min ? 'Beat 0% deadline' : 'Minimum');
   if (ln.freq === 'yearly') return `Yearly ${moneyC(ln.amount)}${ln.dueMonth ? ' · ' + MONTHS[ln.dueMonth - 1] + ' ' + (ln.dueDay || 1) : ''}`;
   if (ln.spread && ln.freq === 'monthly') return `${moneyC(ln.amount)}/mo${ln.dueDay ? ' · due the ' + ordinal(ln.dueDay) : ''}`;
@@ -865,7 +882,7 @@ function budgetView(m) {
       const stale = l.varies && (!l.bill.updatedAt || l.bill.updatedAt.slice(0, 7) < m.today.slice(0, 7));
       return `<div class="bl" role="button" tabindex="0" data-a="${l.kind}" data-id="${esc(l.id)}"><div class="main"><div class="t"><span>${esc(l.name)}</span></div>
         <div class="s">${whoChip(l.who)}<span>${when}</span>${tags.join('')}${l.varies ? `<button class="upd" data-a="amt" data-id="${esc(l.id)}">${stale ? 'Update amount' : 'Changes monthly'}</button>` : ''}</div></div>
-        <div class="a num">${l.amount > 0 ? moneyC(l.freq === 'monthly' ? l.amount : mo) : '<span style="color:var(--amber)">$0</span>'}<small>${l.freq === 'monthly' ? '/mo' : '/mo avg'} · ${l.mode === 'due' ? 'one check' : moneyC(l.mode === 'split' ? Math.ceil(per * 100) / 100 : Math.ceil(per)) + '/check'}</small></div></div>`;
+        <div class="a num">${l.amount > 0 ? moneyC(l.freq === 'monthly' ? l.amount : mo) : '<span style="color:var(--amber)">$0</span>'}<small>${l.freq === 'monthly' ? '/mo' : '/mo avg'} · ${l.mode === 'due' ? 'one check' : moneyC(Math.ceil(per * 100) / 100) + '/check'}</small></div></div>`;
     }).join('');
     return `<div class="grp"><div class="grp-h"><span class="gdot" style="--g:${groupColor(k)}"></span><span>${esc(k)}</span><span class="num">${money(tot, false)}/mo</span></div><div class="card">${rows}</div></div>`;
   }).join('');
@@ -1076,7 +1093,7 @@ function oakCard(b, P, m) {
   const subline = names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3} more` : '');
   const rows = b.rows.map(r => {
     const ln = r.ln;
-    let s = r.ln.autopay && r.due && !r.covered ? `Autopay on ${fmtWD(r.due)} · nothing to do` : r.cushion ? 'A little extra, just in case' : r.part ? `${r.part.catchup ? 'Catching up · ' : r.part.n > 1 ? `Part ${r.part.i} of ${r.part.n} · ` : ''}due ${fmtWD(r.due)}` : r.due && ln.freq !== 'yearly' ? `Due ${fmtWD(r.due)}` : ln.freq === 'paycheck' ? 'Every paycheck' : ln.freq === 'yearly' ? 'Saving up for the yearly bill' : 'Saving up a little each paycheck';
+    let s = r.ln.autopay && r.due && !r.covered ? `Autopay on ${fmtWD(r.due)} · nothing to do` : r.cushion ? (r.base ? (r.roundup ? `A little extra (${moneyC(r.base)}) + ${money(r.roundup)} to make it a whole dollar` : 'A little extra, just in case') : 'Makes it a whole dollar') : r.part ? `${r.part.catchup ? 'Catching up · ' : r.part.n > 1 ? `Part ${r.part.i} of ${r.part.n} · ` : ''}due ${fmtWD(r.due)}` : r.due && ln.freq !== 'yearly' ? `Due ${fmtWD(r.due)}` : ln.freq === 'paycheck' ? 'Every paycheck' : ln.freq === 'yearly' ? 'Saving up for the yearly bill' : 'Saving up a little each paycheck';
     if (ln.kind === 'debt' && m.minOnly) s += ' · minimum';
     const tick = b.kind === 'pay' && P.cur ? `<button class="tick ${r.covered ? 'on' : ''}" data-a="tick" data-k="${esc(ln.key)}" aria-label="${r.covered ? 'Undo' : 'I paid'} ${esc(ln.name)}">${I.check}</button>` : '';
     return `<div class="o-row ${r.covered && b.kind === 'pay' ? 'done' : ''}">${tick}<div class="n"><b>${esc(ln.name)}</b><span>${s}</span></div><span class="v num">${moneyC(r.amt)}</span></div>`;
@@ -1103,15 +1120,20 @@ function tick(key) {
   }
   if (r.covered) return toast('Already logged as paid. Undo it from History.');
   const ops = [], chk = { amt: r.remaining, at: now, by: me() };
-  // log a real payment only when money leaves for the bill itself (not when it's just set aside or sent to Ethan)
-  const logIt = ln.mode === 'due' || (ln.kind === 'debt' && (bkById(ln.who).kind === 'pay' || ln.mode === 'even'));
+  const bk = bkById(ln.who), perCheck = bk.kind === 'pay' || bk.logs;
+  let amt = r.remaining, logIt;
+  if (bk.kind === 'save' && ln.kind !== 'debt') logIt = false;              // rent etc.: just set aside
+  else if (ln.mode === 'split' && !perCheck) {                              // you pay the whole thing on the due date
+    logIt = true; amt = r2(ln.amount - (r.part?.cyc || 0));
+  } else logIt = ln.mode === 'due' || ln.kind === 'debt' || bk.kind === 'pay';
+  if (amt <= 0.004) logIt = false;
   if (logIt) {
-    const e = { id: uid('e'), debtId: ln.id, date: todayStr(), kind: 'payment', amount: r2(r.remaining), note: 'Paycheck ' + fmt(P.start), createdAt: now, by: me() };
+    const e = { id: uid('e'), debtId: ln.id, date: todayStr(), kind: 'payment', amount: r2(amt), note: 'Paycheck ' + fmt(P.start), createdAt: now, by: me() };
     ops.push({ type: 'addEntry', entry: e }); chk.entryId = e.id;
   }
   ops.push({ type: 'setPaycheck', id: P.start, checks: { [ln.key]: chk } });
   commit(ops);
-  if (logIt && ln.kind === 'debt') toast(`${moneyC(r.remaining)} logged to ${ln.name}`);
+  if (logIt) toast(`${moneyC(amt)} logged to ${ln.name}`);
 }
 function bucketToggle(id) {
   const m = buildModel(), P = planFor(m, 0); if (!P) return;
@@ -1244,7 +1266,7 @@ function billSheet(id) {
   <div class="big-amt num">${moneyC(num(b.amount))}</div>
   <div style="display:flex;flex-wrap:wrap;gap:6px 8px;margin:10px 0 4px;align-items:center">${whoChip(b.who)}${b.varies ? '<span class="tag warn">Changes monthly</span>' : ''}${b.spread && (b.freq || 'monthly') === 'monthly' && num(b.dueDay) ? '<span class="tag acc">Split across paychecks</span>' : ''}${b.updatedAt ? `<span class="tag">Updated ${fmt(b.updatedAt)}</span>` : ''}</div>
   ${b.paused ? `<div class="callout"><span class="ci">${I.pause}</span><p><b>Paused</b> until ${fmtDT(b.snoozeUntil)}.</p><button class="btn sm soft" data-a="resume" data-k="bill" data-id="${esc(id)}">Resume</button></div>` : ''}
-  <dl class="facts"><div><dt>Per month</dt><dd class="num">${moneyC(r2(mo))}</dd></div><div><dt>Per paycheck</dt><dd class="num">${b.freq === 'paycheck' ? moneyC(num(b.amount)) : (b.freq || 'monthly') === 'monthly' && num(b.dueDay) ? (b.spread ? moneyC(Math.ceil(num(b.amount) / splitK(m.every) * 100) / 100) : 'All from one') : moneyC(Math.ceil(mo * 12 / m.ppy))}</dd></div></dl>
+  <dl class="facts"><div><dt>Per month</dt><dd class="num">${moneyC(r2(mo))}</dd></div><div><dt>Per paycheck</dt><dd class="num">${b.freq === 'paycheck' ? moneyC(num(b.amount)) : (b.freq || 'monthly') === 'monthly' && num(b.dueDay) ? (b.spread ? moneyC(Math.ceil(num(b.amount) / splitK(m.every) * 100) / 100) : 'All from one') : moneyC(Math.ceil(mo * 12 / m.ppy * 100) / 100)}</dd></div></dl>
   ${b.note ? `<p class="note">${esc(b.note)}</p>` : ''}
   ${hist.length ? `<div class="list" style="margin:12px 0 6px">${hist.map(e => `<div class="item" style="display:flex;justify-content:space-between;padding:10px 2px"><span>${fmt(e.date)} · ${e.kind === 'billamt' ? 'New amount' : 'Paid'}</span><b class="num">${money(num(e.amount))}</b></div>`).join('')}</div>` : ''}
   <div class="acts">${b.varies ? `<button class="btn pri" data-a="amt" data-id="${esc(id)}">${I.bolt} Update amount</button>` : ''}<button class="btn ${b.varies ? '' : 'pri'}" data-a="editbill" data-id="${esc(id)}">${I.edit} Edit</button></div>
@@ -1327,7 +1349,7 @@ function settingsSheet() {
   <button class="btn pri block">Save</button></form>
   <hr class="hr"><div class="sec-h" style="margin-bottom:8px"><h2 style="font-size:18px">Where the money goes</h2><button class="btn sm soft" data-a="newbk">${I.plus} Add</button></div>
   <p class="note" style="margin:0 0 10px">The piles Oakley sees on her screen. Tap one to rename or change it.</p>
-  <div class="menu">${buckets().map(b => `<button data-a="editbk" data-id="${esc(b.id)}"><span class="mi" style="background:${bkCol(b).soft};color:${bkCol(b).c}">${I[b.icon]}</span><span>${esc(b.name)}<small>${b.label}${b.logs ? ' · counts as paid' : ''}${b.builtin ? '' : ' · added by you'}</small></span></button>`).join('')}</div>
+  <div class="menu">${buckets().map(b => `<button data-a="editbk" data-id="${esc(b.id)}"><span class="mi" style="background:${bkCol(b).soft};color:${bkCol(b).c}">${I[b.icon]}</span><span>${esc(b.name)}<small>${b.label}${b.logs ? ' · counts as paid' : ''}${b.round ? ' · rounds up' : ''}${b.builtin ? '' : ' · added by you'}</small></span></button>`).join('')}</div>
   <hr class="hr"><div class="menu">
   <button data-a="preview"><span class="mi" style="background:var(--c-oakley-soft);color:var(--c-oakley)">${I.eye}</span><span>See Oakley's view<small>Exactly what she sees on her phone</small></span></button>
   <button data-a="sync"><span class="mi">${I.sync}</span><span>Sync now<small>${lastSync ? 'Last synced ' + new Date(lastSync).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'Not synced yet'}</small></span></button>
@@ -1348,6 +1370,7 @@ function bucketSheet(id) {
   ${builtin ? '' : `<div class="field"><span>How it works</span></div><div class="seg" id="kseg">${Object.entries(KIND).map(([k, v]) => `<button type="button" data-k="${k}" aria-pressed="${kind === k}">${v.label}</button>`).join('')}</div><input type="hidden" name="kind" value="${kind}">
   <p class="note" id="khint" style="margin:-6px 0 14px"></p>
 `}
+  ${b?.kind === 'pay' ? '' : `<label class="switch" id="roundf"><span>Round up to a whole dollar<small>Items stay exact. The extra cents go on the Cushion (or a small Round-up line) so Oakley sends an even amount.</small></span><input class="tgl" type="checkbox" name="round" ${b?.round ? 'checked' : ''}></label>`}
   ${b?.kind === 'pay' ? '' : `<label class="switch" id="logsf"><span>When Oakley marks it, it's paid<small>Everything in it counts as paid: debts get their payment logged and bills get checked off. Leave off when you still pay the bills yourself afterwards (it just shows "Funded").</small></span><input class="tgl" type="checkbox" name="logs" ${b ? (b.logs ? 'checked' : '') : 'checked'}></label>`}
   <div class="field"><span>Color</span></div><div class="swatches">${Object.keys(BK_COLORS).map(c => `<button type="button" data-c="${c}" aria-pressed="${color === c}" style="background:${BK_COLORS[c][oakMode() ? 'l' : 'd'][0]}" aria-label="${c}"></button>`).join('')}</div><input type="hidden" name="color" value="${color}">
   <p class="err" id="err" hidden></p>
@@ -1357,14 +1380,14 @@ function bucketSheet(id) {
     const f = $('form', sh);
     $$('.swatches button', sh).forEach(x => x.onclick = () => { f.color.value = x.dataset.c; $$('.swatches button', sh).forEach(y => y.setAttribute('aria-pressed', y === x)); });
     if (!builtin) {
-      const sync = () => { const k = f.kind.value; $$('#kseg button', sh).forEach(y => y.setAttribute('aria-pressed', y.dataset.k === k)); if ($('#logsf', sh)) $('#logsf', sh).hidden = k === 'pay';
+      const sync = () => { const k = f.kind.value; $$('#kseg button', sh).forEach(y => y.setAttribute('aria-pressed', y.dataset.k === k)); if ($('#logsf', sh)) $('#logsf', sh).hidden = k === 'pay'; if ($('#roundf', sh)) $('#roundf', sh).hidden = k === 'pay';
         $('#khint', sh).textContent = { send: 'One total with an "I sent it" button.', save: 'One total with an "I moved it" button, for money set aside.', pay: 'A checklist. She ticks off each one as she pays it.' }[k]; };
       $$('#kseg button', sh).forEach(y => y.onclick = () => { f.kind.value = y.dataset.k; sync(); }); sync();
     }
     if (!b) setTimeout(() => f.name.focus(), 60);
   });
 }
-const savedBuckets = list => JSON.stringify(list.map(b => b.builtin ? { id: b.id, name: b.name, color: b.color, logs: !!b.logs } : { id: b.id, name: b.name, kind: b.kind, color: b.color, logs: !!b.logs }));
+const savedBuckets = list => JSON.stringify(list.map(b => b.builtin ? { id: b.id, name: b.name, color: b.color, logs: !!b.logs, round: !!b.round } : { id: b.id, name: b.name, kind: b.kind, color: b.color, logs: !!b.logs, round: !!b.round }));
 function oakSettingsSheet() {
   openSheet(`<h3>Hi ${esc(ui.preview ? 'Oakley' : auth.user.name)}</h3><p class="sub">You stay signed in on this phone.</p><div class="menu">
   <button data-a="sync"><span class="mi">${I.sync}</span><span>Refresh<small>${lastSync ? 'Updated ' + new Date(lastSync).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''}</small></span></button>
@@ -1527,8 +1550,8 @@ document.addEventListener('submit', e => {
     const id = f.dataset.id, name = f.name.value.trim();
     if (!name) return fail('Give it a name.');
     let list = buckets().map(x => ({ ...x }));
-    if (id) { const x = list.find(y => y.id === id); x.name = name; x.color = f.color.value; if (!x.builtin) x.kind = f.kind.value; x.logs = x.kind !== 'pay' && !!f.logs?.checked; }
-    else list.push({ id: 'k' + Date.now().toString(36), name, kind: f.kind.value, color: f.color.value, logs: f.kind.value !== 'pay' && f.logs.checked });
+    if (id) { const x = list.find(y => y.id === id); x.name = name; x.color = f.color.value; if (!x.builtin) x.kind = f.kind.value; x.logs = x.kind !== 'pay' && !!f.logs?.checked; x.round = x.kind !== 'pay' && !!f.round?.checked; }
+    else list.push({ id: 'k' + Date.now().toString(36), name, kind: f.kind.value, color: f.color.value, logs: f.kind.value !== 'pay' && f.logs.checked, round: f.kind.value !== 'pay' && f.round.checked });
     commit([{ type: 'setSetting', key: 'buckets', value: savedBuckets(list) }]);
     toast(id ? 'Saved' : `${name} added. Now pick it on a debt or bill.`);
     return settingsSheet();
@@ -1607,6 +1630,9 @@ document.addEventListener('submit', e => {
   }
 });
 
+// Payments for a monthly due date: anything from halfway since the last due date to ~2 weeks after it
+// (so paying a few days late, or logging it late, still counts for that month).
+const cyclePaid = (id, prev, due) => paidBetween(id, addDays(prev, Math.floor(diffDays(prev, due) / 2)), addDays(due, 16));
 /* Autopay: on each due date the payment is logged by itself (dated the due date).
    Stored as setting autopay_<id> = the date it was turned on, so it never back-fills older months.
    Entry ids are fixed per item + due date, so both phones logging at once can't double it. */
