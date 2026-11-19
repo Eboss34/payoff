@@ -164,6 +164,8 @@ button.sum-i b{border-bottom:1.5px dashed var(--line)}
 .rs-note{margin:-4px 16px 12px;font-size:13px;color:var(--amber)}
 .rs-list{margin:0 12px 12px;border-radius:14px;background:rgba(0,0,0,.18)}
 .rs-list .li{padding:10px 13px}
+.rs-row{width:100%;background:none;border:0;border-bottom:1px solid var(--line2);text-align:left;color:inherit}
+.rs-row:last-child{border-bottom:0}
 
 /* ============ budget ============ */
 .grp{margin-top:16px}
@@ -691,6 +693,7 @@ function planFor(m, off) {
     if (ln.mode === 'due') {
       due = dueInRange(ln.dueDay, start, next); if (!due) continue;
       if (P.cur) since = paidBetween(ln.id, prevDue(ln.dueDay, due));
+      if (ln.kind === 'bill' && since > 0.004) since = 1e9;
       amt = ln.amount;
       if (ln.kind === 'debt') { const s = ln.it.sim, p = makePlan(ln.it.debt, s.balNow + since, m.today, m.minOnly); amt = Math.min(p.planned, s.balNow + since); }
     } else if (ln.mode === 'split') {
@@ -709,7 +712,7 @@ function planFor(m, off) {
       const bk = bkById(ln.who), perCheck = bk.kind === 'pay' || bk.logs;   // paid a piece every paycheck vs. paid in full on the due date
       if (P.cur) {
         if (perCheck) since = parts > 1 ? paidBetween(ln.id, prev) : paidBetween(ln.id, addDays(start, -1), next);
-        else { const cyc = cyclePaid(ln.id, prev, due); part.cyc = cyc; if (cyc >= ln.amount - 0.005) since = 1e9; }
+        else { const cyc = cyclePaid(ln.id, prev, due); part.cyc = cyc; if (cyc >= ln.amount - 0.005 || (ln.kind === 'bill' && cyc > 0.004)) since = 1e9; }
       }
       amt = parts >= use ? ln.amount : Math.ceil(ln.amount / use * parts * 100) / 100;
       if (ln.kind === 'debt') amt = Math.min(amt, ln.it.sim.balNow + since);
@@ -837,17 +840,23 @@ function reserveFor(m, pile = 'ethan') {
       else it.dated[r.due] = (it.dated[r.due] || 0) + r.amt;
     }
   }
+  const ticks = {};   // checkmarks you or Oakley made, by item -> dates
+  for (const rec of data.paychecks) for (const [k, v] of Object.entries(rec.checks || {})) {
+    if (k.startsWith('bk:') || !v || !v.at) continue; (ticks[k] ||= []).push(localYmd(new Date(v.at)));
+  }
   const items = [];
   for (const { ln, dated, even } of Object.values(per)) {
+    const tk = ticks[ln.key] || [];
     let need = 0, next = null;
     for (const [D, amt] of Object.entries(dated)) {
       if (D < stale) continue;
-      const paid = cyclePaid(ln.id, prevDue(ln.dueDay, D), D);
-      const left = r2(Math.max(0, amt - paid));
+      const prev = prevDue(ln.dueDay, D), lo = addDays(prev, Math.floor(diffDays(prev, D) / 2)), hi = addDays(D, 16);
+      const paid = cyclePaid(ln.id, prev, D), ticked = tk.some(t => t > lo && t < hi);
+      const left = ticked || (ln.kind === 'bill' && paid > 0.004) ? 0 : r2(Math.max(0, amt - paid));
       if (left > 0.004) { need += left; if (!next || D < next) next = D; }
     }
     if (even.length) {   // saved-up items: everything sent since the last time it was paid
-      const last = data.entries.filter(e => e.debtId === ln.id && e.kind === 'payment').reduce((a, e) => e.date > a ? e.date : a, '');
+      const last = [...data.entries.filter(e => e.debtId === ln.id && e.kind === 'payment').map(e => e.date), ...tk].reduce((a, d) => d > a ? d : a, '');
       need += even.filter(x => x.start > last).reduce((t, x) => t + x.amt, 0);
     }
     need = r2(need);
@@ -865,15 +874,22 @@ function reserveCard(m) {
     const f = r2(bal.amt - R.total);
     free = `<button class="rs-free ${f < 0 ? 'neg' : ''}" data-a="mybal"><span>${f >= 0 ? 'Free to spend' : 'Short by'}</span><b class="num">${money(Math.abs(f))}</b><small>From your ${money(bal.amt)} balance · ${new Date(bal.at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} ${new Date(bal.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · tap to update</small></button>`;
   } else free = `<button class="rs-free none" data-a="mybal"><span>What does your bank say?</span><small>Enter your balance to see what's free to spend</small></button>`;
-  const rows = R.items.map(i => `<div class="li"><span class="gdot" style="--g:${groupColor(i.ln.group)}"></span><div class="li-main" style="cursor:default"><span class="li-t">${esc(i.ln.name)}</span>
-    <span class="li-s">${i.next ? (i.next < m.today ? `<span class="tag warn">Was due ${fmt(i.next)}</span>` : `For ${fmt(i.next)}${i.ln.autopay ? ' · autopay' : ''}`) : 'Saved up so far'}</span></div><span class="li-amt num">${money(i.amt)}</span></div>`).join('');
+  const rows = R.items.map(i => {
+    // a bill that was due already: suggest what it was before you typed in the newer bill
+    let pre = i.amt, date = i.next && i.next < m.today ? i.next : m.today;
+    if (i.ln.kind === 'bill') {
+      const ams = data.entries.filter(e => e.debtId === i.ln.id && e.kind === 'billamt').sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt || '').localeCompare(a.createdAt || ''));
+      pre = i.next && i.next < m.today && ams.length > 1 && ams[0].date > i.next ? num(ams[1].amount) : num(i.ln.amount);
+    }
+    return `<button class="li rs-row" data-a="rspay" data-k="${i.ln.kind}" data-id="${esc(i.ln.id)}" data-amt="${r2(pre)}" data-date="${date}"><span class="gdot" style="--g:${groupColor(i.ln.group)}"></span><div class="li-main"><span class="li-t">${esc(i.ln.name)}</span>
+    <span class="li-s">${i.next ? (i.next < m.today ? `<span class="tag warn">Was due ${fmt(i.next)}</span>` : `For ${fmt(i.next)}${i.ln.autopay ? ' · autopay' : ''}`) : 'Saved up so far'}</span></div><span class="li-amt num">${money(i.amt)}</span></button>`; }).join('');
   return `<section class="reserve">
     <button class="rs-top" data-a="rsexp" aria-expanded="${open}"><span class="rs-k">Keep in your account</span>
       <span class="rs-n num">${money(R.total)}</span>
       <span class="rs-s">Already sent for bills you haven't paid yet${R.items.length ? ` · ${R.items.length} item${R.items.length > 1 ? 's' : ''}` : ''}</span><span class="chev">${I.chev}</span></button>
     ${free}
     ${R.waiting ? `<p class="rs-note">Oakley hasn't marked this paycheck's ${money(R.waiting, false)} as sent yet, so it's not counted.</p>` : ''}
-    <div class="o-drop ${open ? 'open' : ''}" id="drop-reserve"><div>${rows ? `<div class="rs-list">${rows}</div>` : '<p class="note" style="margin:0 16px 14px">Nothing waiting to be paid right now.</p>'}</div></div>
+    <div class="o-drop ${open ? 'open' : ''}" id="drop-reserve"><div>${rows ? `<div class="rs-list">${rows}</div><p class="rs-note" style="color:var(--muted);margin-top:-4px">Already paid one? Tap it to log the payment.</p>` : '<p class="note" style="margin:0 16px 14px">Nothing waiting to be paid right now.</p>'}</div></div>
   </section>`;
 }
 function planView(m) {
@@ -1198,6 +1214,8 @@ function tick(key) {
   if (bk.kind === 'save' && ln.kind !== 'debt') logIt = false;              // rent etc.: just set aside
   else if (ln.mode === 'split' && !perCheck) {                              // you pay the whole thing on the due date
     logIt = true; amt = r2(ln.amount - (r.part?.cyc || 0));
+  } else if (ln.mode === 'even' && ln.kind === 'bill' && ln.freq !== 'paycheck') {     // saved-up bill: you paid the whole bill
+    logIt = true; amt = r2(ln.amount);
   } else logIt = ln.mode === 'due' || ln.kind === 'debt' || bk.kind === 'pay';
   if (amt <= 0.004) logIt = false;
   if (logIt) {
@@ -1546,11 +1564,16 @@ document.addEventListener('click', e => {
       break;
     }
     case 'clearbal': LS.del('bud.myBal'); closeSheet(); break;
+    case 'rspay': {
+      if (el.dataset.k === 'debt') { logSheet(id, el.dataset.amt, 'payment'); const f = $('form[data-form=log]'); if (f && el.dataset.date) f.date.value = el.dataset.date; break; }
+    }
+    // falls through for bills
     case 'billpay': {
       const b = data.bills.find(x => x.id === id);
-      openSheet(`<h3>Log a payment</h3><p class="sub">${esc(b.name)}: what you paid.</p>
-      <form data-form="billpay" data-id="${esc(id)}"><input class="in big num" name="amount" inputmode="decimal" value="${num(b.amount) ? num(b.amount).toFixed(2) : ''}" placeholder="0.00" autocomplete="off" required>
-      <label class="field" style="margin-top:12px"><span>Date</span><input class="in" type="date" name="date" required value="${todayStr()}"></label>
+      const pa = el.dataset.amt ? num(el.dataset.amt) : num(b.amount), pdt = el.dataset.date || todayStr();
+      openSheet(`<h3>Log a payment</h3><p class="sub">${esc(b.name)}: what you paid. Any amount marks that month's bill as paid.</p>
+      <form data-form="billpay" data-id="${esc(id)}"><input class="in big num" name="amount" inputmode="decimal" value="${pa ? pa.toFixed(2) : ''}" placeholder="0.00" autocomplete="off" required>
+      <label class="field" style="margin-top:12px"><span>Date paid</span><input class="in" type="date" name="date" required value="${pdt}"></label>
       <p class="err" id="err" hidden></p><div class="acts"><button type="button" class="btn" data-a="close">Cancel</button><button class="btn pri">Save</button></div></form>`, sh => setTimeout(() => $('input', sh).select(), 80));
       break;
     }
