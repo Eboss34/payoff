@@ -148,6 +148,23 @@ button.sum-i b{border-bottom:1.5px dashed var(--line)}
 .callout p{margin:0;flex:1;font-size:14px;color:var(--ink2)}
 .callout p b{color:var(--ink)}
 
+/* ============ keep-in-account card ============ */
+.reserve{margin:10px 0 2px;border-radius:var(--r);background:linear-gradient(160deg,#173B3A,#112B2D);border:1px solid #24504D;overflow:hidden}
+.rs-top{display:grid;grid-template-columns:1fr auto;gap:2px 10px;width:100%;text-align:left;background:none;border:0;padding:16px 16px 12px}
+.rs-k{grid-column:1;font-size:13px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--accent)}
+.rs-n{grid-column:1;font:800 34px/1.1 var(--display);letter-spacing:-.02em}
+.rs-s{grid-column:1;font-size:13.5px;color:var(--ink2)}
+.rs-top .chev{grid-column:2;grid-row:1/4;align-self:center;width:34px;height:34px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;transition:transform .25s}
+.rs-top[aria-expanded="true"] .chev{transform:rotate(180deg)}
+.rs-free{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 10px;width:calc(100% - 24px);margin:0 12px 12px;padding:11px 13px;border-radius:14px;border:0;background:var(--green-soft);color:var(--green);text-align:left}
+.rs-free span{font-weight:700;font-size:14px}.rs-free b{font:800 20px/1.1 var(--display);margin-left:auto}
+.rs-free small{flex-basis:100%;font-size:12px;opacity:.8;font-weight:600}
+.rs-free.neg{background:var(--red-soft);color:var(--red)}
+.rs-free.none{background:rgba(255,255,255,.05);color:var(--ink2);display:block}.rs-free.none span{display:block;color:var(--ink)}
+.rs-note{margin:-4px 16px 12px;font-size:13px;color:var(--amber)}
+.rs-list{margin:0 12px 12px;border-radius:14px;background:rgba(0,0,0,.18)}
+.rs-list .li{padding:10px 13px}
+
 /* ============ budget ============ */
 .grp{margin-top:16px}
 .grp-h{display:flex;align-items:center;gap:9px;padding:0 2px 8px;font-weight:700;font-size:15px}
@@ -803,6 +820,62 @@ function rowSub(r) {
   return esc(ln.group);
 }
 let m_minOnly = false;
+/* "Keep in your account": money Oakley has already sent for bills you pay that you haven't paid yet.
+   Walks back through recent paychecks Oakley marked as sent, adds up what each one carried for every item,
+   and subtracts what's been paid toward it since. */
+function reserveFor(m, pile = 'ethan') {
+  const c = m.cycle; if (!c) return null;
+  const today = m.today, stale = addDays(today, -16), per = {};
+  for (let off = 0; off >= -26; off--) {
+    const start = addDays(c.start, off * c.every);
+    const rec = paycheckRec(start); if (!rec || !(rec.checks || {})['bk:' + pile]) continue;
+    const P = planFor(m, off);
+    for (const r of P.rows) {
+      if (r.cushion || r.ln.who !== pile) continue;
+      const it = per[r.ln.key] ||= { ln: r.ln, dated: {}, even: [] };
+      if (r.ln.mode === 'even' || !r.due) it.even.push({ start, amt: r.amt });
+      else it.dated[r.due] = (it.dated[r.due] || 0) + r.amt;
+    }
+  }
+  const items = [];
+  for (const { ln, dated, even } of Object.values(per)) {
+    let need = 0, next = null;
+    for (const [D, amt] of Object.entries(dated)) {
+      if (D < stale) continue;
+      const paid = cyclePaid(ln.id, prevDue(ln.dueDay, D), D);
+      const left = r2(Math.max(0, amt - paid));
+      if (left > 0.004) { need += left; if (!next || D < next) next = D; }
+    }
+    if (even.length) {   // saved-up items: everything sent since the last time it was paid
+      const last = data.entries.filter(e => e.debtId === ln.id && e.kind === 'payment').reduce((a, e) => e.date > a ? e.date : a, '');
+      need += even.filter(x => x.start > last).reduce((t, x) => t + x.amt, 0);
+    }
+    need = r2(need);
+    if (need > 0.004) items.push({ ln, amt: need, next });
+  }
+  items.sort((a, b) => (a.next || '9999').localeCompare(b.next || '9999') || a.ln.name.localeCompare(b.ln.name));
+  const cur = planFor(m, 0), b = cur.buckets.find(x => x.id === pile);
+  return { total: r2(items.reduce((t, i) => t + i.amt, 0)), items, waiting: b && b.total > 0 && !b.chk ? b.total : 0 };
+}
+function reserveCard(m) {
+  const R = reserveFor(m); if (!R) return '';
+  const bal = LS.get('bud.myBal', null), open = !!ui.open.reserve;
+  let free = '';
+  if (bal) {
+    const f = r2(bal.amt - R.total);
+    free = `<button class="rs-free ${f < 0 ? 'neg' : ''}" data-a="mybal"><span>${f >= 0 ? 'Free to spend' : 'Short by'}</span><b class="num">${money(Math.abs(f))}</b><small>From your ${money(bal.amt)} balance · ${new Date(bal.at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} ${new Date(bal.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · tap to update</small></button>`;
+  } else free = `<button class="rs-free none" data-a="mybal"><span>What does your bank say?</span><small>Enter your balance to see what's free to spend</small></button>`;
+  const rows = R.items.map(i => `<div class="li"><span class="gdot" style="--g:${groupColor(i.ln.group)}"></span><div class="li-main" style="cursor:default"><span class="li-t">${esc(i.ln.name)}</span>
+    <span class="li-s">${i.next ? (i.next < m.today ? `<span class="tag warn">Was due ${fmt(i.next)}</span>` : `For ${fmt(i.next)}${i.ln.autopay ? ' · autopay' : ''}`) : 'Saved up so far'}</span></div><span class="li-amt num">${money(i.amt)}</span></div>`).join('');
+  return `<section class="reserve">
+    <button class="rs-top" data-a="rsexp" aria-expanded="${open}"><span class="rs-k">Keep in your account</span>
+      <span class="rs-n num">${money(R.total)}</span>
+      <span class="rs-s">Already sent for bills you haven't paid yet${R.items.length ? ` · ${R.items.length} item${R.items.length > 1 ? 's' : ''}` : ''}</span><span class="chev">${I.chev}</span></button>
+    ${free}
+    ${R.waiting ? `<p class="rs-note">Oakley hasn't marked this paycheck's ${money(R.waiting, false)} as sent yet, so it's not counted.</p>` : ''}
+    <div class="o-drop ${open ? 'open' : ''}" id="drop-reserve"><div>${rows ? `<div class="rs-list">${rows}</div>` : '<p class="note" style="margin:0 16px 14px">Nothing waiting to be paid right now.</p>'}</div></div>
+  </section>`;
+}
 function planView(m) {
   m_minOnly = m.minOnly;
   if (!m.cycle) return `<section class="sec first"><div class="card"><div class="sec-h"><h2>When does Oakley get paid?</h2></div>
@@ -815,7 +888,7 @@ function planView(m) {
   const legend = P.buckets.filter(b => b.total > 0).map(b => `<span><i style="background:${bkCol(b).c}"></i>${esc(b.short)} <b class="num">${money(b.total, false)}</b></span>`).join('') +
     (P.income > P.total ? `<span><i style="background:var(--green);opacity:.55"></i>Left</span>` : '');
   const label = P.off === 0 ? 'This paycheck' : P.off === 1 ? 'Next paycheck' : `In ${P.off} paychecks`;
-  return `<section class="sec first">
+  return `${reserveCard(m)}<section class="sec first">
     <div class="period"><button class="iconbtn sm" data-a="off" data-d="-1" ${ui.off <= 0 ? 'disabled' : ''} aria-label="Previous paycheck">${I.left}</button>
       <div class="period-t"><b>${label}</b><span>${fmtWD(P.start)} – ${fmt(addDays(P.next, -1))}</span></div>
       <button class="iconbtn sm" data-a="off" data-d="1" ${ui.off >= 8 ? 'disabled' : ''} aria-label="Next paycheck">${I.right}</button></div>
@@ -1269,7 +1342,8 @@ function billSheet(id) {
   <dl class="facts"><div><dt>Per month</dt><dd class="num">${moneyC(r2(mo))}</dd></div><div><dt>Per paycheck</dt><dd class="num">${b.freq === 'paycheck' ? moneyC(num(b.amount)) : (b.freq || 'monthly') === 'monthly' && num(b.dueDay) ? (b.spread ? moneyC(Math.ceil(num(b.amount) / splitK(m.every) * 100) / 100) : 'All from one') : moneyC(Math.ceil(mo * 12 / m.ppy * 100) / 100)}</dd></div></dl>
   ${b.note ? `<p class="note">${esc(b.note)}</p>` : ''}
   ${hist.length ? `<div class="list" style="margin:12px 0 6px">${hist.map(e => `<div class="item" style="display:flex;justify-content:space-between;padding:10px 2px"><span>${fmt(e.date)} · ${e.kind === 'billamt' ? 'New amount' : 'Paid'}</span><b class="num">${money(num(e.amount))}</b></div>`).join('')}</div>` : ''}
-  <div class="acts">${b.varies ? `<button class="btn pri" data-a="amt" data-id="${esc(id)}">${I.bolt} Update amount</button>` : ''}<button class="btn ${b.varies ? '' : 'pri'}" data-a="editbill" data-id="${esc(id)}">${I.edit} Edit</button></div>
+  <div class="acts">${b.varies ? `<button class="btn pri" data-a="amt" data-id="${esc(id)}">${I.bolt} Update amount</button>` : ''}<button class="btn ${b.varies ? '' : 'pri'}" data-a="billpay" data-id="${esc(id)}">${I.dollar} Log payment</button></div>
+  <div class="acts" style="margin-top:8px"><button class="btn" data-a="editbill" data-id="${esc(id)}">${I.edit} Edit</button></div>
   <div class="acts" style="margin-top:8px">${b.paused ? '' : `<button class="btn" data-a="pause" data-k="bill" data-id="${esc(id)}">${I.pause} Pause</button>`}<button class="btn" data-a="close">Close</button></div>`);
 }
 function billEditSheet(id) {
@@ -1463,6 +1537,23 @@ document.addEventListener('click', e => {
     case 'debt': if (oakMode()) break; debtSheet(id); break;
     case 'bill': if (oakMode()) break; billSheet(id); break;
     case 'amt': amountSheet(id); break;
+    case 'rsexp': { ui.open.reserve = !ui.open.reserve; el.setAttribute('aria-expanded', ui.open.reserve); $('#drop-reserve')?.classList.toggle('open', ui.open.reserve); break; }
+    case 'mybal': {
+      const b = LS.get('bud.myBal', null);
+      openSheet(`<h3>Your account balance</h3><p class="sub">What your bank app shows right now. This stays on this phone only.</p>
+      <form data-form="mybal"><input class="in big num" name="amount" inputmode="decimal" value="${b ? b.amt.toFixed(2) : ''}" placeholder="0.00" autocomplete="off" required>
+      <p class="err" id="err" hidden></p><div class="acts">${b ? '<button type="button" class="btn" data-a="clearbal">Clear</button>' : ''}<button type="button" class="btn" data-a="close">Cancel</button><button class="btn pri">Save</button></div></form>`, sh => setTimeout(() => $('input', sh).select(), 80));
+      break;
+    }
+    case 'clearbal': LS.del('bud.myBal'); closeSheet(); break;
+    case 'billpay': {
+      const b = data.bills.find(x => x.id === id);
+      openSheet(`<h3>Log a payment</h3><p class="sub">${esc(b.name)}: what you paid.</p>
+      <form data-form="billpay" data-id="${esc(id)}"><input class="in big num" name="amount" inputmode="decimal" value="${num(b.amount) ? num(b.amount).toFixed(2) : ''}" placeholder="0.00" autocomplete="off" required>
+      <label class="field" style="margin-top:12px"><span>Date</span><input class="in" type="date" name="date" required value="${todayStr()}"></label>
+      <p class="err" id="err" hidden></p><div class="acts"><button type="button" class="btn" data-a="close">Cancel</button><button class="btn pri">Save</button></div></form>`, sh => setTimeout(() => $('input', sh).select(), 80));
+      break;
+    }
     case 'new': editSheet(null); break;
     case 'edit': editSheet(id); break;
     case 'newbill': billEditSheet(null); break;
@@ -1608,6 +1699,16 @@ document.addEventListener('submit', e => {
     layer.innerHTML = ''; document.body.style.overflow = ''; commit(ops);
     if (!old) toast(`${bill.name} added`);
     return;
+  }
+  if (kind === 'mybal') {
+    const v = parseMoney(f.amount.value); if (!isFinite(v)) return fail('Enter the amount, like 1250.40.');
+    LS.set('bud.myBal', { amt: r2(v), at: Date.now() }); closeSheet(); return;
+  }
+  if (kind === 'billpay') {
+    const v = parseMoney(f.amount.value); if (!(v > 0)) return fail('Enter an amount greater than $0.');
+    const id = f.dataset.id, entry = { id: uid('e'), debtId: id, date: f.date.value || todayStr(), kind: 'payment', amount: r2(v), note: '', createdAt: new Date().toISOString(), by: me() };
+    layer.innerHTML = ''; document.body.style.overflow = ''; commit([{ type: 'addEntry', entry }]);
+    toast(`${money(entry.amount)} logged to ${nameOf(id)}`, 'Undo', () => commit([{ type: 'deleteEntry', id: entry.id }])); return;
   }
   if (kind === 'amt') {
     const id = f.dataset.id, b = data.bills.find(x => x.id === id), v = parseMoney(f.amount.value);
