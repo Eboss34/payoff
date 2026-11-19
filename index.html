@@ -688,6 +688,8 @@ function planFor(m, off) {
   const rec = paycheckRec(start);
   const k = splitK(c.every);
   P.bonus = [];
+  // Months with an extra paycheck before a due date: spread the bill over all of them (default) or skip it on the extra one.
+  const [xMode, xFrom] = String(data.settings.extraPaycheck || 'spread@2026-11-20').split('@');
   for (const ln of m.lines) {
     let amt = 0, due = null, since = 0, part = null;
     if (ln.mode === 'due') {
@@ -702,19 +704,24 @@ function planFor(m, off) {
       const prev = prevDue(ln.dueDay, due);
       const i0 = Math.ceil(diffDays(c.start, addDays(prev, 1)) / c.every);
       let n = 0; while (addDays(c.start, (i0 + n) * c.every) <= due) n++;
-      const use = Math.max(1, Math.min(k, n)), pos = off - i0;
+      const wStart = addDays(c.start, i0 * c.every);
+      const use = Math.max(1, xMode === 'spread' && wStart >= (xFrom || '') ? n : Math.min(k, n)), pos = off - i0;
+      // Bills with an estimate: early paychecks send the fixed estimate, the last one before it's due sends the rest of the real bill.
+      const [estA, estFrom] = (ln.kind === 'bill' ? String(data.settings['est_' + ln.id] || '') : '').split('@');
+      const est = num(estA) > 0 && use > 1 && wStart >= (estFrom || '') ? num(estA) : 0;
+      const partAmt = j => est ? (j < use - 1 ? est / (use - 1) : Math.max(0, ln.amount - est)) : ln.amount / use;
       // Just switched to splitting? The first paycheck after that catches up on the parts nobody sent yet.
       const ss = data.settings['splitSince_' + ln.id], si = ss ? Math.floor(diffDays(c.start, ss) / c.every) : -1e9;
       let parts = 1;
       if (si > i0) { if (off < si) continue; if (off === si) parts = Math.min(off, i0 + use - 1) - i0 + 1; else if (pos >= use) { if (ln.amount > 0) P.bonus.push(ln); continue; } }
       else if (pos >= use) { if (ln.amount > 0) P.bonus.push(ln); continue; }
-      part = { i: Math.min(pos, use - 1) + 1, n: use, catchup: parts > 1 };
+      part = { i: Math.min(pos, use - 1) + 1, n: use, catchup: parts > 1, est: est ? (pos < use - 1 ? 'estimate' : 'rest') : null };
       const bk = bkById(ln.who), perCheck = bk.kind === 'pay' || bk.logs;   // paid a piece every paycheck vs. paid in full on the due date
       if (P.cur) {
         if (perCheck) since = parts > 1 ? paidBetween(ln.id, prev) : paidBetween(ln.id, addDays(start, -1), next);
         else { const cyc = cyclePaid(ln.id, prev, due); part.cyc = cyc; if (cyc >= ln.amount - 0.005 || (ln.kind === 'bill' && cyc > 0.004)) since = 1e9; }
       }
-      amt = parts >= use ? ln.amount : Math.ceil(ln.amount / use * parts * 100) / 100;
+      { const last = Math.min(pos, use - 1); let t = 0; for (let j = last - parts + 1; j <= last; j++) t += partAmt(j); amt = Math.ceil(t * 100 - 1e-6) / 100; }
       if (ln.kind === 'debt') amt = Math.min(amt, ln.it.sim.balNow + since);
     } else {
       if (P.cur) since = paidBetween(ln.id, addDays(start, -1), next);
@@ -805,7 +812,7 @@ function statusTag(r, P, today) {
   if (r.part && r.part.cyc > 0.004 && r.ln.kind === 'debt') return `<span class="tag warn">${money(r.part.cyc, false)} of ${money(r.ln.amount, false)} paid</span>`;
   if (r.funded) return '<span class="tag ok">Funded</span>';
   if (r.ln.autopay && r.due) return `<span class="tag acc">Autopay ${fmt(r.due)}</span>`;
-  if (r.part) return `<span class="tag acc">${r.part.catchup ? 'Catch-up · ' : r.part.n > 1 ? `Part ${r.part.i} of ${r.part.n} · ` : ''}due ${fmt(r.due)}</span>`;
+  if (r.part) return `<span class="tag acc">${r.part.catchup ? 'Catch-up · ' : r.part.est === 'estimate' ? 'Estimate · ' : r.part.est === 'rest' ? 'Rest of bill · ' : r.part.n > 1 ? `Part ${r.part.i} of ${r.part.n} · ` : ''}due ${fmt(r.due)}</span>`;
   if (r.got > 0) return `<span class="tag warn">${money(r.got, false)} paid</span>`;
   if (r.ln.spread && r.ln.freq !== 'paycheck') return `<span class="tag acc">Saving up</span>`;
   if (r.due && P.cur && r.due < today) return '<span class="tag bad">Past due</span>';
@@ -1182,7 +1189,7 @@ function oakCard(b, P, m) {
   const subline = names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3} more` : '');
   const rows = b.rows.map(r => {
     const ln = r.ln;
-    let s = r.ln.autopay && r.due && !r.covered ? `Autopay on ${fmtWD(r.due)} · nothing to do` : r.cushion ? (r.base ? (r.roundup ? `A little extra (${moneyC(r.base)}) + ${money(r.roundup)} to make it a whole dollar` : 'A little extra, just in case') : 'Makes it a whole dollar') : r.part ? `${r.part.catchup ? 'Catching up · ' : r.part.n > 1 ? `Part ${r.part.i} of ${r.part.n} · ` : ''}due ${fmtWD(r.due)}` : r.due && ln.freq !== 'yearly' ? `Due ${fmtWD(r.due)}` : ln.freq === 'paycheck' ? 'Every paycheck' : ln.freq === 'yearly' ? 'Saving up for the yearly bill' : 'Saving up a little each paycheck';
+    let s = r.ln.autopay && r.due && !r.covered ? `Autopay on ${fmtWD(r.due)} · nothing to do` : r.cushion ? (r.base ? (r.roundup ? `A little extra (${moneyC(r.base)}) + ${money(r.roundup)} to make it a whole dollar` : 'A little extra, just in case') : 'Makes it a whole dollar') : r.part ? `${r.part.catchup ? 'Catching up · ' : r.part.est === 'estimate' ? 'Estimate · ' : r.part.est === 'rest' ? 'Rest of the bill · ' : r.part.n > 1 ? `Part ${r.part.i} of ${r.part.n} · ` : ''}due ${fmtWD(r.due)}` : r.due && ln.freq !== 'yearly' ? `Due ${fmtWD(r.due)}` : ln.freq === 'paycheck' ? 'Every paycheck' : ln.freq === 'yearly' ? 'Saving up for the yearly bill' : 'Saving up a little each paycheck';
     if (ln.kind === 'debt' && m.minOnly) s += ' · minimum';
     const tick = b.kind === 'pay' && P.cur ? `<button class="tick ${r.covered ? 'on' : ''}" data-a="tick" data-k="${esc(ln.key)}" aria-label="${r.covered ? 'Undo' : 'I paid'} ${esc(ln.name)}">${I.check}</button>` : '';
     return `<div class="o-row ${r.covered && b.kind === 'pay' ? 'done' : ''}">${tick}<div class="n"><b>${esc(ln.name)}</b><span>${s}</span></div><span class="v num">${moneyC(r.amt)}</span></div>`;
@@ -1380,6 +1387,7 @@ function billEditSheet(id) {
   <label class="field" id="monf"><span>Due month</span><select class="in" name="month"><option value="">Not sure</option>${MONTHS.map((x, i) => `<option value="${i + 1}" ${b && num(b.dueMonth) === i + 1 ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
   <label class="switch" id="autof"><span>Autopay<small>Comes out of the account by itself. The app marks it paid on the due day.</small></span><input class="tgl" type="checkbox" name="autopay" ${b && autopayOn(b.id) ? 'checked' : ''}></label>
   <label class="switch" id="spreadf"><span>Split across paychecks<small>Even shares from each paycheck before it's due, instead of all from one. Needs a due day.</small></span><input class="tgl" type="checkbox" name="spread" ${(b ? b.spread : false) ? 'checked' : ''}></label>
+  <label class="field" id="estf"><span>Estimate for the early paycheck(s) (optional)</span><input class="in num" name="est" inputmode="decimal" value="${b && num(String(data.settings['est_' + b.id] || '').split('@')[0]) ? num(String(data.settings['est_' + b.id]).split('@')[0]) : ''}" placeholder="e.g. 85"><small>Sent before the bill arrives. The paycheck right before it's due sends the rest of the real bill.</small></label>
   <label class="switch" id="variesf"><span>Amount changes every month<small>Like utilities. Reminds you to update it.</small></span><input class="tgl" type="checkbox" name="varies" ${b?.varies ? 'checked' : ''}></label>
   <label class="field"><span>Note (optional)</span><input class="in" name="note" maxlength="120" value="${esc(b?.note)}" placeholder="Account, autopay, etc."></label>
   <p class="err" id="err" hidden></p>
@@ -1391,9 +1399,11 @@ function billEditSheet(id) {
       $$('#fseg button', sh).forEach(x => x.setAttribute('aria-pressed', x.dataset.f === fr));
       $('#dayf', sh).hidden = fr === 'paycheck'; $('#monf', sh).hidden = fr !== 'yearly';
       $('#spreadf', sh).hidden = fr !== 'monthly'; $('#autof', sh).hidden = fr === 'paycheck'; $('#variesf', sh).hidden = fr !== 'monthly';
+      $('#estf', sh).hidden = fr !== 'monthly' || !f.spread.checked;
       $('#amtl', sh).textContent = fr === 'yearly' ? 'Amount per year' : fr === 'paycheck' ? 'Amount per paycheck' : 'Amount per month';
     };
     $$('#fseg button', sh).forEach(x => x.onclick = () => { f.freq.value = x.dataset.f; sync(); });
+    f.spread.addEventListener('change', sync);
     bindSeg(sh, 'who');
     if (!b) sh.addEventListener('segchange', () => { f.spread.checked = bkById(f.who.value).kind === 'save'; });
     sync(); if (!b) setTimeout(() => f.name.focus(), 60);
@@ -1433,6 +1443,9 @@ function settingsSheet() {
   const s = data.settings;
   openSheet(`<h3>Settings</h3><p class="sub">Shared between both of you.</p>
   <label class="switch hot"><span>Minimums only<small>Plan just the minimum payment on every debt. Paychecks and what Oakley sends you shrink to match.</small></span><input class="tgl" type="checkbox" id="minOnly" ${s.minOnly === 'yes' ? 'checked' : ''}></label>
+  <div class="field"><span>Months with 3 paychecks before a bill</span></div>
+  <div class="seg" id="xseg">${[['spread', 'Spread over all 3'], ['skip', 'Skip it (bonus paycheck)']].map(([v, l]) => `<button type="button" data-x="${v}" aria-pressed="${String(s.extraPaycheck || 'spread').split('@')[0] === v}">${l}</button>`).join('')}</div>
+  <p class="note" style="margin:-6px 0 14px">Spread: split bills get a third from each paycheck that month, so every paycheck is lighter. Skip: two halves, and the third paycheck skips them.</p>
   <form data-form="settings"><div class="two"><label class="field"><span>A payday</span><input class="in" type="date" name="anchor" value="${esc(s.payAnchor || '')}"><small>Any past or upcoming one.</small></label>
   <label class="field"><span>Paid every</span><select class="in" name="every">${[7, 14, 15, 30].map(n => `<option value="${n}" ${num(s.payEvery || 14) === n ? 'selected' : ''}>${n === 15 ? '15 days' : n === 30 ? 'Month' : n === 7 ? 'Week' : '2 weeks'}</option>`).join('')}</select></label></div>
   <label class="field"><span>Oakley's usual paycheck (take-home)</span><input class="in num" name="income" inputmode="decimal" value="${num(s.income) ? num(s.income).toFixed(2) : ''}" placeholder="0.00"></label>
@@ -1449,6 +1462,12 @@ function settingsSheet() {
   <button data-a="logoutOthers"><span class="mi" style="background:var(--red-soft);color:var(--red)">${I.out}</span><span>Sign out other phones<small>If a phone is lost. You stay signed in here.</small></span></button>
   <button data-a="logout"><span class="mi" style="background:var(--red-soft);color:var(--red)">${I.out}</span><span>Sign out<small>Signed in as ${esc(auth.user.name)}</small></span></button>
   </div><div class="acts"><button class="btn" data-a="close">Done</button></div>`, sh => {
+    $$('#xseg button', sh).forEach(x => x.onclick = () => {
+      const v = x.dataset.x, cur = String(data.settings.extraPaycheck || 'spread').split('@')[0]; if (v === cur) return;
+      $$('#xseg button', sh).forEach(y => y.setAttribute('aria-pressed', y === x));
+      commit([{ type: 'setSetting', key: 'extraPaycheck', value: v === 'spread' ? 'spread@' + todayStr() : 'skip' }]);
+      toast(v === 'spread' ? 'Extra paychecks now share the bills' : 'Extra paychecks skip split bills');
+    });
     $('#minOnly', sh).onchange = e => { const on = e.target.checked; commit([{ type: 'setSetting', key: 'minOnly', value: on ? 'yes' : 'no' }]); toast(on ? 'Minimums only is on' : 'Back to the full payoff plan'); };
   });
 }
@@ -1718,6 +1737,9 @@ document.addEventListener('submit', e => {
       spread: freq === 'monthly' ? f.spread.checked : true, varies: freq === 'monthly' ? f.varies.checked : false, note: f.note.value.trim(),
       updatedAt: !old || num(old.amount) !== r2(amount) ? todayStr() : (old.updatedAt || '') };
     const ops = [{ type: 'upsertBill', bill }, ...splitOps(old, bill), ...autopayToggle(old, bill.id, auto)];
+    { const ev = freq === 'monthly' && bill.spread && f.est.value !== '' ? parseMoney(f.est.value) : 0, cur = num(String(data.settings['est_' + bill.id] || '').split('@')[0]);
+      if (!(ev >= 0)) return fail('Estimate should be a number, like 85.');
+      if (r2(ev) !== r2(cur)) ops.push({ type: 'setSetting', key: 'est_' + bill.id, value: ev > 0 ? `${r2(ev)}@${todayStr()}` : '' }); }
     if (old && num(old.amount) !== r2(amount)) ops.push({ type: 'addEntry', entry: { id: uid('e'), debtId: bill.id, date: todayStr(), kind: 'billamt', amount: r2(amount), note: '', createdAt: now, by: me() } });
     layer.innerHTML = ''; document.body.style.overflow = ''; commit(ops);
     if (!old) toast(`${bill.name} added`);
