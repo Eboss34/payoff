@@ -577,6 +577,8 @@ function nextYearly(month, day, from) {
   for (let i = 0; i < 2; i++, y++) { const d = `${y}-${pad(month)}-${pad(Math.min(day || 1, dim(y, month)))}`; if (d >= from) return d; }
   return null;
 }
+const perCheckOf = id => num(data.settings['pc_' + id]);
+const paysPerYear = () => 365.25 / Math.max(1, num(data.settings.payEvery) || 14);
 function makePlan(debt, bal, today, minOnly) {
   const min = num(debt.minPayment); let req = 0, monthsLeft = null;
   if (debt.zeroApr && debt.zeroUntil && debt.zeroUntil > today) {
@@ -584,6 +586,8 @@ function makePlan(debt, bal, today, minOnly) {
     req = Math.ceil(bal / monthsLeft);
   }
   const auto = Math.max(min, req), custom = num(debt.plan), full = custom > 0 ? custom : auto;
+  const pc = perCheckOf(debt.id);
+  if (pc > 0) { const mo = pc * paysPerYear() / 12; return { min, req, monthsLeft, auto, full: mo, planned: mo, custom: true, minOnly, perCheck: pc }; }
   return { min, req, monthsLeft, auto, full, planned: minOnly ? min : full, custom: custom > 0, minOnly };
 }
 /* Day-by-day balance: interest accrues daily at APR/365 (0% while interest-free) and is added
@@ -664,6 +668,9 @@ function buildLines(m) {
   for (const it of m.items) {
     if (it.sim.done) continue;
     const d = it.debt;
+    const pc = perCheckOf(d.id);
+    if (pc > 0) { L.push({ key: 'd:' + d.id, kind: 'debt', id: d.id, name: d.name, sub: d.description, who: it.who, group: 'Debt payments', freq: 'paycheck',
+      dueDay: d.dueDay ? num(d.dueDay) : 0, mode: 'even', amount: Math.min(pc, it.sim.balNow), it, perCheck: pc }); continue; }
     L.push({ key: 'd:' + d.id, kind: 'debt', id: d.id, name: d.name, sub: d.description, who: it.who, group: 'Debt payments', freq: 'monthly',
       dueDay: d.dueDay ? num(d.dueDay) : 0, mode: !d.dueDay ? 'even' : d.spread ? 'split' : 'due', amount: Math.min(it.sim.plan.planned, it.sim.balNow), it });
   }
@@ -824,6 +831,7 @@ function statusTag(r, P, today) {
 function rowSub(r) {
   const ln = r.ln;
   if (r.cushion) return r.base ? (r.roundup ? `${moneyC(r.base)} + ${money(r.roundup)} to round up` : 'Extra on top') : 'Rounds the total to a whole dollar';
+  if (ln.kind === 'debt' && ln.perCheck) return 'Same every paycheck';
   if (ln.kind === 'debt') return m_minOnly ? 'Minimum' : (r.ln.it.sim.plan.custom ? 'Your plan' : r.ln.it.sim.plan.req > r.ln.it.sim.plan.min ? 'Beat 0% deadline' : 'Minimum');
   if (ln.freq === 'yearly') return `Yearly ${moneyC(ln.amount)}${ln.dueMonth ? ' · ' + MONTHS[ln.dueMonth - 1] + ' ' + (ln.dueDay || 1) : ''}`;
   if (ln.spread && ln.freq === 'monthly') return `${moneyC(ln.amount)}/mo${ln.dueDay ? ' · due the ' + ordinal(ln.dueDay) : ''}`;
@@ -974,6 +982,7 @@ function budgetView(m) {
       const tags = [];
       if (l.kind === 'debt') tags.push(`<span class="tag">${m.minOnly ? 'Minimum' : l.it.sim.plan.custom ? 'Your plan' : 'Plan'}</span>`);
       if (l.mode === 'split') tags.push('<span class="tag acc">Split</span>');
+      if (l.perCheck) tags.push('<span class="tag acc">Every paycheck</span>');
       if (l.autopay) tags.push('<span class="tag ok">Autopay</span>');
       const stale = l.varies && (!l.bill.updatedAt || l.bill.updatedAt.slice(0, 7) < m.today.slice(0, 7));
       return `<div class="bl" role="button" tabindex="0" data-a="${l.kind}" data-id="${esc(l.id)}"><div class="main"><div class="t"><span>${esc(l.name)}</span></div>
@@ -1006,8 +1015,8 @@ function debtMeta(it) {
   if (sim.isZeroNow) bits.push(`<span class="tag ok">0%${debt.zeroUntil && debt.zeroUntil < '2100' ? ' until ' + fmtMY(debt.zeroUntil) : ''}</span>`);
   else bits.push(`<span class="tag">${num(debt.apr)}% APR</span>`);
   if (debt.dueDay) bits.push(`<span>Due the ${ordinal(num(debt.dueDay))}</span>`);
-  if (debt.spread && debt.dueDay) bits.push('<span class="tag acc">Split</span>');
-  bits.push(`<span>${money(Math.min(sim.plan.planned, sim.balNow), false)}/mo</span>`);
+  if (debt.spread && debt.dueDay && !perCheckOf(debt.id)) bits.push('<span class="tag acc">Split</span>');
+  bits.push(sim.plan.perCheck ? `<span>${moneyC(sim.plan.perCheck)}/paycheck</span>` : `<span>${money(Math.min(sim.plan.planned, sim.balNow), false)}/mo</span>`);
   bits.push(sim.never ? '<span style="color:var(--red)">Won\'t pay off at this rate</span>' : `<span>Done ${fmtMY(sim.payoff)}</span>`);
   return bits.join('');
 }
@@ -1343,7 +1352,11 @@ function editSheet(id) {
   <div class="two"><label class="field"><span>Minimum payment</span><input class="in num" name="min" inputmode="decimal" value="${d && d.minPayment ? num(d.minPayment) : ''}" placeholder="0.00"></label>
   <label class="field"><span>Due day</span><select class="in" name="due"><option value="">No set day</option>${Array.from({ length: 31 }, (_, i) => `<option value="${i + 1}" ${d && num(d.dueDay) === i + 1 ? 'selected' : ''}>${ordinal(i + 1)}</option>`).join('')}</select></label></div>
   <label class="switch"><span>Autopay<small>Comes out of the account by itself. The app logs the payment on the due day for you.</small></span><input class="tgl" type="checkbox" name="autopay" ${d && autopayOn(d.id) ? 'checked' : ''}></label>
+  <label class="switch"><span>Same amount every paycheck<small>A fixed payment from every paycheck, even in months with 3. Replaces the monthly minimum for planning.</small></span><input class="tgl" type="checkbox" name="pcOn" ${d && perCheckOf(d.id) ? 'checked' : ''}></label>
+  <label class="field" id="pcf" ${d && perCheckOf(d.id) ? '' : 'hidden'}><span>Amount each paycheck</span><input class="in num" name="pc" inputmode="decimal" value="${d && perCheckOf(d.id) ? perCheckOf(d.id) : ''}" placeholder="125"></label>
+  <div id="monthlyOpts" ${d && perCheckOf(d.id) ? 'hidden' : ''}>
   <label class="switch"><span>Split across paychecks<small>e.g. $250/mo becomes $125 from each paycheck before it's due. Needs a due day.</small></span><input class="tgl" type="checkbox" name="spread" ${d?.spread ? 'checked' : ''}></label>
+  </div>
   <label class="switch"><span>Interest-free right now<small>Promo or 0% period</small></span><input class="tgl" type="checkbox" name="zero" ${d?.zeroApr ? 'checked' : ''}></label>
   <label class="field" id="zrow" ${d?.zeroApr ? '' : 'hidden'}><span>0% ends on</span><input class="in" type="date" name="until" value="${esc(d?.zeroUntil)}"><small>You'll get an email 30 and 7 days before it ends.</small></label>
   <label class="field"><span>Your own monthly payment (optional)</span><input class="in num" name="plan" inputmode="decimal" value="${d && d.plan ? num(d.plan) : ''}" placeholder="Leave empty for the suggested amount"><small>Ignored while Minimums Only is on.</small></label>
@@ -1351,6 +1364,7 @@ function editSheet(id) {
   <div class="acts"><button type="button" class="btn" data-a="close">Cancel</button><button class="btn pri">${d ? 'Save' : 'Add debt'}</button></div>
   ${d ? `<div class="acts" style="margin-top:6px"><button type="button" class="btn danger" data-a="remove" data-id="${esc(d.id)}">Remove this debt</button></div>` : ''}</form>`, sh => {
     const f = $('form', sh); f.zero.onchange = () => { $('#zrow', sh).hidden = !f.zero.checked; }; bindSeg(sh, 'who');
+    f.pcOn.onchange = () => { $('#pcf', sh).hidden = !f.pcOn.checked; $('#monthlyOpts', sh).hidden = f.pcOn.checked; if (f.pcOn.checked) setTimeout(() => f.pc.focus(), 50); };
   });
 }
 
@@ -1717,7 +1731,10 @@ document.addEventListener('submit', e => {
     if (f.autopay.checked && f.due.value === '') return fail('Autopay needs a due day so the app knows when it comes out.');
     const debt = { ...(old || { id: uid('d'), startBalance: r2(bal), startDate: todayStr(), archived: false, sort: Date.now() % 1e9, createdAt: now, snoozeUntil: '' }),
       name: f.name.value.trim(), description: f.description.value.trim(), apr, minPayment: min, dueDay: f.due.value === '' ? '' : +f.due.value, zeroApr: zero, zeroUntil: zero ? f.until.value : '', plan, who: f.who.value, spread: f.spread.checked };
-    const ops = [{ type: 'upsertDebt', debt }, ...splitOps(old, debt), ...autopayToggle(old, debt.id, f.autopay.checked)];
+    const pcv = f.pcOn.checked ? parseMoney(f.pc.value) : 0;
+    if (f.pcOn.checked && !(pcv > 0)) return fail('Enter the amount sent each paycheck, like 125.');
+    const ops = [{ type: 'upsertDebt', debt }, ...splitOps(old, debt), ...autopayToggle(old, debt.id, f.autopay.checked && !f.pcOn.checked)];
+    if (r2(pcv) !== r2(perCheckOf(debt.id))) ops.push({ type: 'setSetting', key: 'pc_' + debt.id, value: pcv > 0 ? r2(pcv) : '' });
     if (old) { const cur = buildModel().all.find(i => i.debt.id === id).sim.balNow; if (Math.abs(cur - bal) > 0.004) ops.push({ type: 'addEntry', entry: { id: uid('e'), debtId: id, date: todayStr(), kind: 'sync', amount: r2(bal), note: 'Balance edited', createdAt: now, by: me() } }); }
     layer.innerHTML = ''; document.body.style.overflow = ''; commit(ops);
     if (!old) toast(`${debt.name} added`);
@@ -1810,7 +1827,7 @@ function autopayOps() {
     return true;
   };
   for (const it of m.items) {
-    const d = it.debt, since = data.settings['autopay_' + d.id], day = num(d.dueDay);
+    const d = it.debt, since = perCheckOf(it.debt.id) > 0 ? '' : data.settings['autopay_' + d.id], day = num(d.dueDay);
     if (!since || !day || it.sim.done) continue;
     let bal = it.sim.balNow;
     for (const due of dueDatesSince(since, today, day)) {
